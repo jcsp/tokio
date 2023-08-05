@@ -206,12 +206,25 @@ impl<T> Local<T> {
             } else {
                 // Push the current task and half of the queue into the
                 // inject queue.
-                match self.push_overflow(task, real, tail, overflow, stats) {
-                    Ok(_) => return,
-                    // Lost the race, try again
-                    Err(v) => {
-                        task = v;
+                if false {
+                    // TODO: make dependent on strict mode and/or check if tasks
+                    // are really pinned
+                    match self.push_overflow(task, real, tail, overflow, stats) {
+                        Ok(_) => return,
+                        // Lost the race, try again
+                        Err(v) => {
+                            task = v;
+                        }
                     }
+                } else {
+                    // For pinning to work, we can't opaquely overflow a whole range
+                    // of tasks: just overflow the one we couldn't schedule
+                    // TODO: we could make this efficient again if we split the
+                    // local run queue into one stealable and one for pinned tasks,
+                    // or we could walk the queue and keep shedding until we hit
+                    // a pinned task.
+                    overflow.push(task);
+                    return;
                 }
             }
         };
