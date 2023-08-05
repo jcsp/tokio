@@ -1134,10 +1134,19 @@ impl Handle {
     fn push_remote_task(&self, task: Notified) {
         self.shared.scheduler_metrics.inc_remote_schedule_count();
 
-        let mut synced = self.shared.synced.lock();
-        // safety: passing in correct `idle::Synced`
-        unsafe {
-            self.shared.inject.push(&mut synced.inject, task);
+        if let Some(pin_worker) = task.header().get_worker_pin() {
+            let mut synced = self.shared.inject_local_sync[pin_worker as usize].lock();
+            unsafe {
+                self.shared.inject_local[pin_worker as usize].push(&mut synced, task)
+            }
+
+
+        } else {
+            let mut synced = self.shared.synced.lock();
+            // safety: passing in correct `idle::Synced`
+            unsafe {
+                self.shared.inject.push(&mut synced.inject, task);
+            }
         }
     }
 
