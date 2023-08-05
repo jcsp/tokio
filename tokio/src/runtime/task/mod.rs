@@ -364,7 +364,7 @@ impl<S: 'static> Task<S> {
 }
 
 impl<S: 'static> Notified<S> {
-    fn header(&self) -> &Header {
+    pub(crate) fn header(&self) -> &Header {
         self.0.header()
     }
 }

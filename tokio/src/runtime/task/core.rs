@@ -390,6 +390,10 @@ impl<T: Future, S: Schedule> Core<T, S> {
 }
 
 impl Header {
+    pub(crate) fn get_worker_pin(&self) -> Option<u8> {
+        self.state.load().get_worker_pin()
+    }
+
     pub(super) unsafe fn set_next(&self, next: Option<NonNull<Header>>) {
         self.queue_next.with_mut(|ptr| *ptr = next);
     }
