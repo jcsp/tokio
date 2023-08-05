@@ -148,6 +148,9 @@ struct Core {
 
 /// State shared across all workers
 pub(crate) struct Shared {
+    // In strict mode, some functionality is disabled to allow worker pinning to work
+    strict_mode: bool,
+
     /// Per-worker remote state. All other workers have access to this and is
     /// how they communicate between each other.
     remotes: Box<[Remote]>,
@@ -308,6 +311,8 @@ pub(super) fn create(
     let remotes_len = remotes.len();
     let handle = Arc::new(Handle {
         shared: Shared {
+            // TODO: make strict mode externally configurable
+            strict_mode: true,
             remotes: remotes.into_boxed_slice(),
             inject,
             inject_local: inject_local_queues.into_boxed_slice(),
@@ -841,6 +846,15 @@ impl Core {
     /// a new worker will actually try to steal. The idea is to make sure not all
     /// workers will be trying to steal at the same time.
     fn steal_work(&mut self, worker: &Worker) -> Option<Notified> {
+        // TODO: Work stealing is disabled until we implement a version of it
+        // that will filter out worker-pinned tasks from what it steals from
+        // a remote worker.  To do this efficiently might require splitting
+        // the ready queue, so that there is one "stealable" queue of unpinned
+        // tasks, and one that cannot be stolen from.
+        if worker.handle.shared.strict_mode {
+            return None;
+        }
+
         if !self.transition_to_searching(worker) {
             return None;
         }
