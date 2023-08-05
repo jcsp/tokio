@@ -100,6 +100,9 @@ pub(super) struct Worker {
 
 /// Core data
 struct Core {
+    /// Used for worker pinning
+    worker_id: u8,
+
     /// Used to schedule bookkeeping tasks every so often.
     tick: u32,
 
@@ -262,8 +265,14 @@ pub(super) fn create(
     let mut inject_local_queues = Vec::with_capacity(size);
     let mut inject_local_queues_synced = Vec::with_capacity(size);
 
+    // TODO: implement optional "strict mode" in which worker count has to be within
+    // this bound, and/or extend the bits in the task state to allow worker IDs much
+    // greater (needs to be >= the largets number of cores on machines we will run
+    // on)
+    assert!(size < 255);
+
     // Create the local queues
-    for _ in 0..size {
+    for i in 0..size {
         let (steal, run_queue) = queue::local();
 
         let park = park.clone();
@@ -272,6 +281,7 @@ pub(super) fn create(
         let stats = Stats::new(&metrics);
 
         cores.push(Box::new(Core {
+            worker_id: i as u8,
             tick: 0,
             lifo_slot: None,
             lifo_enabled: !config.disable_lifo_slot,
@@ -760,6 +770,10 @@ impl Context {
 }
 
 impl Core {
+    fn get_worker_id(&self) ->u8 {
+        self.worker_id
+    }
+
     /// Increment the tick
     fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
@@ -1023,6 +1037,9 @@ impl task::Schedule for Arc<Handle> {
 impl Handle {
     pub(super) fn schedule_task(&self, task: Notified, is_yield: bool) {
         with_current(|maybe_cx| {
+            // If the task has a worker affinity that is != ourselves,
+            // then skip the possibility of executing it via our local
+            // queue, and go straight to scheduling it remotely.
             if let Some(cx) = maybe_cx {
                 // Make sure the task is part of the **current** scheduler.
                 if self.ptr_eq(&cx.worker.handle) {
@@ -1048,6 +1065,16 @@ impl Handle {
 
     fn schedule_local(&self, core: &mut Core, task: Notified, is_yield: bool) {
         core.stats.inc_local_schedule_count();
+
+        if let Some(pin) = task.header().get_worker_pin() {
+            if pin != core.get_worker_id() {
+                // This task is forbidden to execute on this worker, must be
+                // routed via the remote scheduling path (same as if a task
+                // overflowed)
+                self.push_remote_task(task);
+                return;
+            }
+        }
 
         // Spawning from the worker thread. If scheduling a "yield" then the
         // task must always be pushed to the back of the queue, enabling other
