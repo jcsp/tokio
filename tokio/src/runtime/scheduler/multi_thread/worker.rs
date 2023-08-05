@@ -154,6 +154,14 @@ pub(crate) struct Shared {
     ///  2. Submit work to the scheduler when a worker run queue is saturated
     pub(super) inject: inject::Shared<Arc<Handle>>,
 
+    // Task queue for tasks that are local to a particular worker, but have overflowed
+    // from its immediate fixed-size ready queue.
+    // TODO: this is only in Shared so that other workers can inject tasks for invoke_on:
+    //       that should be replaced with an all-to-all mesh of queues instead of a global
+    //       mutex, a la seastar
+    pub(super) inject_local: Box<[inject::Shared<Arc<Handle>>]>,
+    pub(super) inject_local_sync: Box<[Mutex<inject::Synced>]>,
+
     /// Coordinates idle workers
     idle: Idle,
 
@@ -251,6 +259,9 @@ pub(super) fn create(
     let mut remotes = Vec::with_capacity(size);
     let mut worker_metrics = Vec::with_capacity(size);
 
+    let mut inject_local_queues = Vec::with_capacity(size);
+    let mut inject_local_queues_synced = Vec::with_capacity(size);
+
     // Create the local queues
     for _ in 0..size {
         let (steal, run_queue) = queue::local();
@@ -276,6 +287,9 @@ pub(super) fn create(
 
         remotes.push(Remote { steal, unpark });
         worker_metrics.push(metrics);
+        let (inject, inject_synced) = inject::Shared::new();
+        inject_local_queues.push(inject);
+        inject_local_queues_synced.push(Mutex::new(inject_synced));
     }
 
     let (idle, idle_synced) = Idle::new(size);
@@ -286,6 +300,8 @@ pub(super) fn create(
         shared: Shared {
             remotes: remotes.into_boxed_slice(),
             inject,
+            inject_local: inject_local_queues.into_boxed_slice(),
+            inject_local_sync: inject_local_queues_synced.into_boxed_slice(),
             idle,
             owned: OwnedTasks::new(),
             synced: Mutex::new(Synced {
