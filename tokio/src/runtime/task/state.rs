@@ -46,6 +46,7 @@ const STATE_MASK: usize = LIFECYCLE_MASK | NOTIFIED | JOIN_INTEREST | JOIN_WAKER
 // 8 bits: up to 256 workers when using pinning
 const WORKER_PIN_MASK: usize = 0b11111111_000_000;
 
+
 /// Bits used by the ref count portion of the state.
 const REF_COUNT_MASK: usize = !(STATE_MASK | WORKER_PIN_MASK);
 
@@ -54,6 +55,9 @@ const REF_COUNT_SHIFT: usize = REF_COUNT_MASK.count_zeros() as usize;
 
 // How many zeros to the right of WORKER_PIN_MASK
 const WORKER_PIN_SHIFT: usize = REF_COUNT_SHIFT - WORKER_PIN_MASK.count_ones() as usize;
+
+// All 1s: not pinned
+const WORKER_PIN_NONE: u8 = (WORKER_PIN_MASK >> WORKER_PIN_SHIFT) as u8;
 
 /// One ref count.
 const REF_ONE: usize = 1 << REF_COUNT_SHIFT;
@@ -68,7 +72,8 @@ const REF_ONE: usize = 1 << REF_COUNT_SHIFT;
 ///
 /// As the task starts with a `JoinHandle`, `JOIN_INTEREST` is set.
 /// As the task starts with a `Notified`, `NOTIFIED` is set.
-const INITIAL_STATE: usize = (REF_ONE * 3) | JOIN_INTEREST | NOTIFIED;
+/// All 1s for worker pin field, means task is not pinned by default.
+const INITIAL_STATE: usize = (REF_ONE * 3) | JOIN_INTEREST | NOTIFIED | WORKER_PIN_MASK;
 
 #[must_use]
 pub(super) enum TransitionToRunning {
@@ -580,12 +585,17 @@ impl Snapshot {
         self.0 &= !JOIN_WAKER
     }
 
-    fn set_worker_pin(&mut self, worker_id: u8) {
+    pub(crate) fn set_worker_pin(&mut self, worker_id: u8) {
         self.0 = (self.0 & !WORKER_PIN_MASK) | ((worker_id << WORKER_PIN_SHIFT) as usize);
     }
 
-    fn get_worker_pin(&mut self) -> u8 {
-        ((self.0 & WORKER_PIN_MASK) >> WORKER_PIN_SHIFT) as u8
+    pub(crate) fn get_worker_pin(&mut self) -> Option<u8> {
+        let pin = ((self.0 & WORKER_PIN_MASK) >> WORKER_PIN_SHIFT) as u8;
+        if pin == WORKER_PIN_NONE {
+            None
+        } else {
+            Some(pin)
+        }
     }
 
     pub(super) fn ref_count(self) -> usize {
