@@ -43,11 +43,17 @@ const CANCELLED: usize = 0b100_000;
 /// All bits.
 const STATE_MASK: usize = LIFECYCLE_MASK | NOTIFIED | JOIN_INTEREST | JOIN_WAKER | CANCELLED;
 
+// 8 bits: up to 256 workers when using pinning
+const WORKER_PIN_MASK: usize = 0b11111111_000_000;
+
 /// Bits used by the ref count portion of the state.
-const REF_COUNT_MASK: usize = !STATE_MASK;
+const REF_COUNT_MASK: usize = !(STATE_MASK | WORKER_PIN_MASK);
 
 /// Number of positions to shift the ref count.
 const REF_COUNT_SHIFT: usize = REF_COUNT_MASK.count_zeros() as usize;
+
+// How many zeros to the right of WORKER_PIN_MASK
+const WORKER_PIN_SHIFT: usize = REF_COUNT_SHIFT - WORKER_PIN_MASK.count_ones() as usize;
 
 /// One ref count.
 const REF_ONE: usize = 1 << REF_COUNT_SHIFT;
@@ -572,6 +578,14 @@ impl Snapshot {
 
     fn unset_join_waker(&mut self) {
         self.0 &= !JOIN_WAKER
+    }
+
+    fn set_worker_pin(&mut self, worker_id: u8) {
+        self.0 = (self.0 & !WORKER_PIN_MASK) | ((worker_id << WORKER_PIN_SHIFT) as usize);
+    }
+
+    fn get_worker_pin(&mut self) -> u8 {
+        ((self.0 & WORKER_PIN_MASK) >> WORKER_PIN_SHIFT) as u8
     }
 
     pub(super) fn ref_count(self) -> usize {
