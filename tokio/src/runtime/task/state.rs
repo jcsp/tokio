@@ -475,6 +475,20 @@ impl State {
         prev.ref_count() == 2
     }
 
+    pub fn get_worker_pin(&self) ->Option<u8> {
+        self.load().get_worker_pin()
+    }
+
+    pub fn set_worker_pin(&self, worker_id: u8) {
+        let r = self.fetch_update(|curr| {
+            let mut next = curr;
+            next.set_worker_pin(worker_id);
+            Some(next)
+        });
+        // Our `f` to fetch_update cannot fail.
+        assert!(r.is_ok());
+    }
+
     fn fetch_update_action<F, T>(&self, mut f: F) -> T
     where
         F: FnMut(Snapshot) -> (T, Option<Snapshot>),
@@ -517,6 +531,8 @@ impl State {
             }
         }
     }
+
+
 }
 
 // ===== impl Snapshot =====

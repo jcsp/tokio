@@ -2,6 +2,7 @@ use crate::future::Future;
 use crate::runtime::task::core::{Core, Trailer};
 use crate::runtime::task::{Cell, Harness, Header, Id, Schedule, State};
 
+use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::task::{Poll, Waker};
 
@@ -155,6 +156,16 @@ const fn get_id_offset(
     offset
 }
 
+tokio_thread_local! {
+    static AFFINITY_MAILBOX: RefCell<Option<u8>> = RefCell::new(None);
+}
+
+pub fn set_worker_pin(worker_id: u8) {
+    AFFINITY_MAILBOX.with(|mb| *(mb.borrow_mut()) = Some(worker_id));
+}
+
+
+
 impl RawTask {
     pub(super) fn new<T, S>(task: T, scheduler: S, id: Id) -> RawTask
     where
@@ -198,6 +209,33 @@ impl RawTask {
     pub(crate) fn poll(self) {
         let vtable = self.header().vtable;
         unsafe { (vtable.poll)(self.ptr) }
+
+        // While running, the task might have requested to set its
+        // core affinity
+        let mailbox = AFFINITY_MAILBOX.with(|mb| {mb.borrow_mut().take()});
+
+        match mailbox {
+            Some(pinned_worker_id)=> {
+                unsafe {
+                self.ptr.as_ref().state.set_worker_pin(pinned_worker_id)
+                }
+                // if let Some(pinned) = task.get_worker_pin()  {
+                //     if pinned != worker_id {
+                //         println!("Pinned {}->{}", worker_id, pinned);
+                //     } else {
+                //         println!("Pinned in-place ({})", worker_id);
+                //     }
+                // } else {
+                //         println!("Unpinned!");
+                // }
+                // TODO: assert that this task doesn't have any
+                // more futures scheduled for this core: it should
+                // have gone via yield and got scheduled remotely
+            },
+            None => {}
+        }
+
+
     }
 
     pub(super) fn schedule(self) {

@@ -313,6 +313,7 @@ impl<T> Future for JoinHandle<T> {
     type Output = super::Result<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("JoinHandle poll");
         ready!(crate::trace::trace_leaf(cx));
         let mut ret = Poll::Pending;
 

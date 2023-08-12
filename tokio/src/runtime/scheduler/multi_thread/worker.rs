@@ -60,13 +60,14 @@ use crate::loom::sync::{Arc, Mutex};
 use crate::runtime;
 use crate::runtime::context;
 use crate::runtime::scheduler::multi_thread::{
-    idle, queue, Counters, Handle, Idle, Overflow, Parker, Stats, TraceStatus, Unparker,
+    idle, queue, Counters, Handle, Idle, Overflow, Parker, Stats, TraceStatus, Unparker, worker,
 };
 use crate::runtime::scheduler::{inject, Defer, Lock};
 use crate::runtime::task::OwnedTasks;
 use crate::runtime::{
     blocking, coop, driver, scheduler, task, Config, SchedulerMetrics, WorkerMetrics,
 };
+use crate::time::sleep;
 use crate::util::atomic_cell::AtomicCell;
 use crate::util::rand::{FastRand, RngSeedGenerator};
 
@@ -85,6 +86,7 @@ cfg_taskdump! {
 cfg_not_taskdump! {
     mod taskdump_mock;
 }
+
 
 /// A scheduler worker
 pub(super) struct Worker {
@@ -529,6 +531,8 @@ fn run(worker: Arc<Worker>) {
     });
 }
 
+
+
 impl Context {
     fn run(&self, mut core: Box<Core>) -> RunResult {
         // Reset `lifo_enabled` here in case the core was previously stolen from
@@ -538,6 +542,8 @@ impl Context {
         // Start as "processing" tasks as polling tasks from the local queue
         // will be one of the first things we do.
         core.stats.start_processing_scheduled_tasks();
+
+        println!("[{}] enter run worker", core.worker_id);
 
         while !core.is_shutdown {
             self.assert_lifo_enabled_is_correct(&core);
@@ -556,6 +562,9 @@ impl Context {
             if let Some(task) = core.next_task(&self.worker) {
                 core = self.run_task(task, core)?;
                 continue;
+            } else {
+                let q = &self.worker.handle.shared.inject_local[core.worker_id as usize];
+
             }
 
             // We consumed all work in the queues and will start searching for work.
@@ -587,6 +596,8 @@ impl Context {
     fn run_task(&self, task: Notified, mut core: Box<Core>) -> RunResult {
         let task = self.worker.handle.shared.owned.assert_owner(task);
 
+        let worker_id = core.get_worker_id();
+
         // Make sure the worker is not in the **searching** state. This enables
         // another idle worker to try to steal work.
         core.transition_from_searching(&self.worker);
@@ -603,13 +614,14 @@ impl Context {
         *self.core.borrow_mut() = Some(core);
 
         // Run the task
-        coop::budget(|| {
+        let r = coop::budget(|| {
             task.run();
             let mut lifo_polls = 0;
 
             // As long as there is budget remaining and a task exists in the
             // `lifo_slot`, then keep running.
             loop {
+
                 // Check if we still have the core. If not, the core was stolen
                 // by another worker.
                 let mut core = match self.core.borrow_mut().take() {
@@ -667,9 +679,12 @@ impl Context {
                 // Run the LIFO task, then loop
                 *self.core.borrow_mut() = Some(core);
                 let task = self.worker.handle.shared.owned.assert_owner(task);
+
                 task.run();
             }
-        })
+        });
+
+        r
     }
 
     fn reset_lifo_enabled(&self, core: &mut Core) {
@@ -793,10 +808,21 @@ impl Core {
             worker
                 .handle
                 .next_remote_task()
-                .or_else(|| self.next_local_task())
+                .or_else(|| self.next_local_task()).or_else( ||
+                    worker
+                        .handle
+                        .next_pinnned_queue_task(self)
+                )
         } else {
             let maybe_task = self.next_local_task();
 
+            if maybe_task.is_some() {
+                return maybe_task;
+            }
+
+            let maybe_task = worker
+                .handle
+                .next_pinnned_queue_task(self);
             if maybe_task.is_some() {
                 return maybe_task;
             }
@@ -923,6 +949,10 @@ impl Core {
             return false;
         }
 
+        if !worker.handle.shared.inject_local[self.worker_id as usize].is_empty() {
+            return false;
+        }
+
         // When the final worker transitions **out** of searching to parked, it
         // must check all the queues one last time in case work materialized
         // between the last work scan and transitioning out of searching.
@@ -957,6 +987,10 @@ impl Core {
                 .shared
                 .idle
                 .unpark_worker_by_id(&worker.handle.shared, worker.index);
+            return true;
+        }
+
+        if !worker.handle.shared.inject_local[self.worker_id as usize].is_empty() {
             return true;
         }
 
@@ -1121,7 +1155,7 @@ impl Handle {
         }
     }
 
-    fn next_remote_task(&self) -> Option<Notified> {
+    fn next_remote_task(&self, ) -> Option<Notified> {
         if self.shared.inject.is_empty() {
             return None;
         }
@@ -1129,6 +1163,20 @@ impl Handle {
         let mut synced = self.shared.synced.lock();
         // safety: passing in correct `idle::Synced`
         unsafe { self.shared.inject.pop(&mut synced.inject) }
+    }
+
+    fn next_pinnned_queue_task(&self, core: &Core) -> Option<Notified> {
+        let worker_id = core.worker_id;
+
+        let q = &self.shared.inject_local[worker_id as usize];
+        if q.is_empty() {
+            return None;
+        }
+
+        let mut synced = self.shared.inject_local_sync[worker_id as usize].lock();
+        unsafe {
+            q.pop(&mut synced)
+        }
     }
 
     fn push_remote_task(&self, task: Notified) {
@@ -1139,8 +1187,7 @@ impl Handle {
             unsafe {
                 self.shared.inject_local[pin_worker as usize].push(&mut synced, task)
             }
-
-
+            self.shared.remotes[pin_worker as usize].unpark.unpark(&self.driver);
         } else {
             let mut synced = self.shared.synced.lock();
             // safety: passing in correct `idle::Synced`
@@ -1176,7 +1223,9 @@ impl Handle {
     }
 
     pub(super) fn notify_all(&self) {
+        let mut i = 0;
         for remote in &self.shared.remotes[..] {
+            i += 1;
             remote.unpark.unpark(&self.driver);
         }
     }

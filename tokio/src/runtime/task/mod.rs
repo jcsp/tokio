@@ -213,6 +213,8 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::{fmt, mem};
 
+pub use raw::set_worker_pin;
+
 /// An owned handle to the task, tracked by ref count.
 #[repr(transparent)]
 pub(crate) struct Task<S: 'static> {
@@ -398,6 +400,14 @@ impl<S: Schedule> LocalNotified<S> {
         let raw = self.task.raw;
         mem::forget(self);
         raw.poll();
+    }
+
+    pub(crate) fn get_worker_pin(&self) -> Option<u8> {
+        self.task.header().state.get_worker_pin()
+    }
+
+    pub(crate) fn set_worker_pin(&self, worker_id: u8) {
+        self.task.header().state.set_worker_pin(worker_id);
     }
 }
 

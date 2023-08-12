@@ -330,4 +330,9 @@ cfg_rt! {
     pub mod futures {
         pub use super::task_local::TaskLocalFuture;
     }
+
+}
+
+cfg_rt_multi_thread! {
+    pub use crate::runtime::task::set_worker_pin;
 }
